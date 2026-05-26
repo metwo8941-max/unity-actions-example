@@ -143,6 +143,11 @@ jobs:
                           Debug.Log("PlayerSettings.Android.targetArchitectures was None. Set to " + architectures + " for CI build.");
                       }
                       PlayerSettings.Android.targetArchitectures = architectures;
+                      if ((architectures & AndroidArchitecture.ARM64) == AndroidArchitecture.ARM64)
+                      {
+                          PlayerSettings.SetScriptingBackend(BuildTargetGroup.Android, ScriptingImplementation.IL2CPP);
+                          Debug.Log("Android scripting backend set to IL2CPP because ARM64 is selected.");
+                      }
 
                       var buildVersion = GetCommandLineValue("buildVersion");
                       if (!string.IsNullOrWhiteSpace(buildVersion))
