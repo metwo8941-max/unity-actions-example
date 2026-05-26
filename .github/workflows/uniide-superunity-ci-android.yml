@@ -40,8 +40,12 @@ jobs:
         run: |
           mkdir -p Assets/Editor/UniIDE/Generated
           cat > Assets/Editor/UniIDE/Generated/UnityLicenseValidation.cs <<'EOF'
+          using System;
+          using System.IO;
+          using System.Linq;
           using UnityEngine;
           using UnityEditor;
+          using UnityEditor.Build.Reporting;
 
           namespace UniIDE.Generated
           {
@@ -53,19 +57,77 @@ jobs:
                   }
               }
 
-              public static class AndroidPlayerSettingsPreflight
+              public static class AndroidCiBuild
               {
                   public static void Validate()
                   {
-                      Debug.Log("ProjectSettings AndroidTargetArchitectures asset line:");
-                      var settingsPath = "ProjectSettings/ProjectSettings.asset";
-                      if (System.IO.File.Exists(settingsPath))
+                      ConfigureAndroidPlayerSettings();
+                  }
+
+                  public static void Build()
+                  {
+                      ConfigureAndroidPlayerSettings();
+                      EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Android, BuildTarget.Android);
+
+                      var scenes = EditorBuildSettings.scenes
+                          .Where(scene => scene.enabled)
+                          .Select(scene => scene.path)
+                          .Where(path => !string.IsNullOrWhiteSpace(path))
+                          .ToArray();
+                      if (scenes.Length == 0)
                       {
-                          foreach (var line in System.IO.File.ReadAllLines(settingsPath))
+                          throw new InvalidOperationException("No enabled scenes found in ProjectSettings/EditorBuildSettings.asset.");
+                      }
+
+                      var outputPath = GetCommandLineValue("customBuildPath");
+                      if (string.IsNullOrWhiteSpace(outputPath))
+                      {
+                          var exportType = GetCommandLineValue("androidExportType");
+                          outputPath = exportType == "androidAppBundle"
+                              ? "build/Android/Android.aab"
+                              : "build/Android/Android.apk";
+                      }
+
+                      var outputDirectory = Path.GetDirectoryName(outputPath);
+                      if (!string.IsNullOrWhiteSpace(outputDirectory))
+                      {
+                          Directory.CreateDirectory(outputDirectory);
+                      }
+
+                      var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+                      {
+                          scenes = scenes,
+                          locationPathName = outputPath,
+                          targetGroup = BuildTargetGroup.Android,
+                          target = BuildTarget.Android,
+                          options = BuildOptions.None
+                      });
+
+                      if (report.summary.result != BuildResult.Succeeded)
+                      {
+                          throw new InvalidOperationException("Android build failed: " + report.summary.result);
+                      }
+
+                      Debug.Log("Android build succeeded: " + outputPath);
+                  }
+
+                  private static void ConfigureAndroidPlayerSettings()
+                  {
+                      Debug.Log("ProjectSettings AndroidTargetArchitectures asset line:");
+                      var assetArchitectures = AndroidArchitecture.None;
+                      var settingsPath = "ProjectSettings/ProjectSettings.asset";
+                      if (File.Exists(settingsPath))
+                      {
+                          foreach (var line in File.ReadAllLines(settingsPath))
                           {
                               if (line.TrimStart().StartsWith("AndroidTargetArchitectures:"))
                               {
                                   Debug.Log(line);
+                                  var rawValue = line.Substring(line.IndexOf(':') + 1).Trim();
+                                  if (int.TryParse(rawValue, out var numericValue))
+                                  {
+                                      assetArchitectures = (AndroidArchitecture)numericValue;
+                                  }
                                   break;
                               }
                           }
@@ -75,11 +137,61 @@ jobs:
                       Debug.Log("PlayerSettings.Android.targetArchitectures before fix: " + architectures);
                       if (architectures == AndroidArchitecture.None)
                       {
-                          PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
-                          AssetDatabase.SaveAssets();
-                          Debug.Log("PlayerSettings.Android.targetArchitectures was None. Set to ARM64 for CI build.");
+                          architectures = assetArchitectures != AndroidArchitecture.None
+                              ? assetArchitectures
+                              : AndroidArchitecture.ARM64;
+                          Debug.Log("PlayerSettings.Android.targetArchitectures was None. Set to " + architectures + " for CI build.");
                       }
+                      PlayerSettings.Android.targetArchitectures = architectures;
+
+                      var buildVersion = GetCommandLineValue("buildVersion");
+                      if (!string.IsNullOrWhiteSpace(buildVersion))
+                      {
+                          PlayerSettings.bundleVersion = buildVersion;
+                      }
+
+                      var versionCode = GetCommandLineValue("androidVersionCode");
+                      if (int.TryParse(versionCode, out var parsedVersionCode))
+                      {
+                          PlayerSettings.Android.bundleVersionCode = parsedVersionCode;
+                      }
+
+                      var exportType = GetCommandLineValue("androidExportType");
+                      EditorUserBuildSettings.buildAppBundle = exportType == "androidAppBundle";
+
+                      var keystoreName = GetCommandLineValue("androidKeystoreName");
+                      if (!string.IsNullOrWhiteSpace(keystoreName))
+                      {
+                          PlayerSettings.Android.useCustomKeystore = true;
+                          PlayerSettings.Android.keystoreName = keystoreName;
+                          PlayerSettings.Android.keystorePass = GetCommandLineValue("androidKeystorePass");
+                          PlayerSettings.Android.keyaliasName = GetCommandLineValue("androidKeyaliasName");
+                          PlayerSettings.Android.keyaliasPass = GetCommandLineValue("androidKeyaliasPass");
+                      }
+
+                      AssetDatabase.SaveAssets();
                       Debug.Log("PlayerSettings.Android.targetArchitectures final: " + PlayerSettings.Android.targetArchitectures);
+                  }
+
+                  private static string GetCommandLineValue(string name)
+                  {
+                      var args = Environment.GetCommandLineArgs();
+                      for (var i = 0; i < args.Length - 1; i++)
+                      {
+                          if (args[i] == "-" + name)
+                          {
+                              return args[i + 1];
+                          }
+                      }
+                      return Environment.GetEnvironmentVariable(ToEnvironmentName(name));
+                  }
+
+                  private static string ToEnvironmentName(string name)
+                  {
+                      return string.Concat(name.Select((character, index) =>
+                          char.IsUpper(character) && index > 0
+                              ? "_" + character
+                              : character.ToString())).ToUpperInvariant();
                   }
               }
           }
@@ -106,7 +218,7 @@ jobs:
         with:
           targetPlatform: Android
           unityVersion: 2021.3.2f1
-          buildMethod: UniIDE.Generated.AndroidPlayerSettingsPreflight.Validate
+          buildMethod: UniIDE.Generated.AndroidCiBuild.Validate
           allowDirtyBuild: true
 
 
@@ -119,6 +231,7 @@ jobs:
         with:
           targetPlatform: Android
           unityVersion: 2021.3.2f1
+          buildMethod: UniIDE.Generated.AndroidCiBuild.Build
           allowDirtyBuild: true
 
           androidExportType: androidPackage
