@@ -27,11 +27,21 @@ jobs:
           fi
           echo "UNITY_LICENSE is configured."
 
+      - name: Restore Library Cache
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-Android-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-Android-
+            Library-
+
       - name: Create Unity license validation script
         run: |
           mkdir -p Assets/Editor/UniIDE/Generated
           cat > Assets/Editor/UniIDE/Generated/UnityLicenseValidation.cs <<'EOF'
           using UnityEngine;
+          using UnityEditor;
 
           namespace UniIDE.Generated
           {
@@ -40,6 +50,36 @@ jobs:
                   public static void ValidateLicense()
                   {
                       Debug.Log("UNITY_LICENSE validation succeeded.");
+                  }
+              }
+
+              public static class AndroidPlayerSettingsPreflight
+              {
+                  public static void Validate()
+                  {
+                      Debug.Log("ProjectSettings AndroidTargetArchitectures asset line:");
+                      var settingsPath = "ProjectSettings/ProjectSettings.asset";
+                      if (System.IO.File.Exists(settingsPath))
+                      {
+                          foreach (var line in System.IO.File.ReadAllLines(settingsPath))
+                          {
+                              if (line.TrimStart().StartsWith("AndroidTargetArchitectures:"))
+                              {
+                                  Debug.Log(line);
+                                  break;
+                              }
+                          }
+                      }
+
+                      var architectures = PlayerSettings.Android.targetArchitectures;
+                      Debug.Log("PlayerSettings.Android.targetArchitectures before fix: " + architectures);
+                      if (architectures == AndroidArchitecture.None)
+                      {
+                          PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
+                          AssetDatabase.SaveAssets();
+                          Debug.Log("PlayerSettings.Android.targetArchitectures was None. Set to ARM64 for CI build.");
+                      }
+                      Debug.Log("PlayerSettings.Android.targetArchitectures final: " + PlayerSettings.Android.targetArchitectures);
                   }
               }
           }
@@ -57,14 +97,17 @@ jobs:
           buildMethod: UniIDE.Generated.UnityLicenseValidation.ValidateLicense
           allowDirtyBuild: true
 
-      - name: Restore Library Cache
-        uses: actions/cache@v4
+      - name: Check Android Player Settings
+        uses: game-ci/unity-builder@v5.0.0
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         with:
-          path: Library
-          key: Library-Android-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
-          restore-keys: |
-            Library-Android-
-            Library-
+          targetPlatform: Android
+          unityVersion: 2021.3.2f1
+          buildMethod: UniIDE.Generated.AndroidPlayerSettingsPreflight.Validate
+          allowDirtyBuild: true
 
 
       - name: Build Android
