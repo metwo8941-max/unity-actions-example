@@ -1,0 +1,118 @@
+name: Build Android
+
+on:
+  push:
+    branches:
+      - ci/build
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Check UNITY_LICENSE secret
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          if [ -z "$UNITY_LICENSE" ]; then
+            echo "UNITY_LICENSE is missing in repository secrets."
+            echo "Please open GitHub settings in UniIDE and configure UNITY_LICENSE before running the build again."
+            exit 1
+          fi
+          echo "UNITY_LICENSE is configured."
+
+      - name: Create Unity license validation script
+        run: |
+          mkdir -p Assets/Editor/UniIDE/Generated
+          cat > Assets/Editor/UniIDE/Generated/UnityLicenseValidation.cs <<'EOF'
+          using UnityEngine;
+
+          namespace UniIDE.Generated
+          {
+              public static class UnityLicenseValidation
+              {
+                  public static void ValidateLicense()
+                  {
+                      Debug.Log("UNITY_LICENSE validation succeeded.");
+                  }
+              }
+          }
+          EOF
+
+      - name: Verify Unity license
+        uses: game-ci/unity-builder@v5.0.0
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          targetPlatform: Android
+          unityVersion: 2021.3.2f1
+          buildMethod: UniIDE.Generated.UnityLicenseValidation.ValidateLicense
+          allowDirtyBuild: true
+
+      - name: Restore Library Cache
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-Android-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-Android-
+            Library-
+
+
+      - name: Diagnose Android keystore secret
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "KEYSTORE_BASE64 is missing in repository secrets."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > /tmp/uniide-build.keystore
+          echo "Decoded keystore size:"
+          wc -c /tmp/uniide-build.keystore
+          echo "Decoded keystore first 8 bytes:"
+          od -An -tx1 -N8 /tmp/uniide-build.keystore | tr -d '\n'
+          echo
+          keytool -list -keystore /tmp/uniide-build.keystore -storepass "$KEYSTORE_PASSWORD" -storetype PKCS12 >/dev/null \
+            || keytool -list -keystore /tmp/uniide-build.keystore -storepass "$KEYSTORE_PASSWORD" -storetype JKS >/dev/null
+          echo "Android keystore secret is readable."
+
+      - name: Build Android
+        uses: game-ci/unity-builder@v5.0.0
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          targetPlatform: Android
+          unityVersion: 2021.3.2f1
+          allowDirtyBuild: true
+
+          androidExportType: androidAppBundle
+          androidKeystoreName: build.keystore
+          androidKeystoreBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          androidKeystorePass: ${{ secrets.KEYSTORE_PASSWORD }}
+          androidKeyaliasName: ${{ secrets.KEY_ALIAS }}
+          androidKeyaliasPass: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-build
+          path: build/Android
+          retention-days: 7
+
+      - name: Clean CI Branch
+        if: always()
+        run: |
+          git push origin --delete ci/build || true
