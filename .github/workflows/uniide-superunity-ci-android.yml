@@ -72,6 +72,7 @@ jobs:
                       var scenes = EditorBuildSettings.scenes
                           .Where(scene => scene.enabled)
                           .Select(scene => scene.path)
+                          .Select(SanitizeScenePath)
                           .Where(path => !string.IsNullOrWhiteSpace(path))
                           .ToArray();
                       if (scenes.Length == 0)
@@ -189,6 +190,21 @@ jobs:
                           }
                       }
                       return Environment.GetEnvironmentVariable(ToEnvironmentName(name));
+                  }
+
+                  private static string SanitizeScenePath(string path)
+                  {
+                      if (string.IsNullOrWhiteSpace(path))
+                      {
+                          return string.Empty;
+                      }
+                      var trimmed = path.Trim();
+                      var unityPathEnd = trimmed.IndexOf(".unity", StringComparison.OrdinalIgnoreCase);
+                      if (unityPathEnd < 0)
+                      {
+                          return trimmed;
+                      }
+                      return trimmed.Substring(0, unityPathEnd + ".unity".Length).Trim();
                   }
 
                   private static string ToEnvironmentName(string name)
