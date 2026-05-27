@@ -787,7 +787,7 @@ PlayerSettings:
   scriptingDefineSymbols: {}
   additionalCompilerArguments: {}
   platformArchitecture: {}
-  scriptingBackend:
+  scriptingBackend:1
     Standalone: 1
   il2cppCompilerConfiguration: {}
   managedStrippingLevel: {}
